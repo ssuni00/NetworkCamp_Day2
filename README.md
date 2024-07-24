@@ -13,4 +13,8 @@ Stop-and-Wait Protocol 구현
   2. 메세지로 sequence, ack 잘 오고가는지 확인
 
 2시도 (파일을 보내보자)
+<img width="1440" alt="image" src="https://github.com/user-attachments/assets/b058d7ac-ddcf-4710-b416-e87f7c29681e">
+: 일단 파일은 잘 가는데.. 52KB파일을 512byte 기준으로 잘라서 전송
+로스가 걸려있는데 제대로 간거면 맞게간..?
+
 

@@ -1,10 +1,15 @@
 #ifndef PROTOCOL_H
 #define PROTOCOL_H
 
+#include <stdlib.h>
+
+#define BUF_SIZE 512
+#define TIMEOUT 3
+
 typedef struct
 {
     int seq_num;
-    char data[512];
+    char data[BUF_SIZE];
 } Packet;
 
 typedef struct
@@ -12,4 +17,6 @@ typedef struct
     int ack_num;
 } Ack;
 
-#endif // PROTOCOL_H
+void error_handling(char *message);
+
+#endif

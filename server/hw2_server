@@ -1,1 +1,89 @@
-dd
+#include "protocol.h"
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <stdlib.h>
+
+void error_handling(char *message);
+
+int main(int argc, char *argv[])
+{
+    int serv_sock;
+    Packet packet;
+    Ack ack;
+    socklen_t clnt_adr_sz;
+    struct sockaddr_in serv_adr, clnt_adr;
+    FILE *file;
+    size_t read_len;
+    int seq_num = 0;
+
+    if (argc != 2)
+    {
+        printf("Usage: %s <port>\n", argv[0]);
+        exit(1);
+    }
+
+    serv_sock = socket(PF_INET, SOCK_DGRAM, 0);
+    if (serv_sock == -1)
+        error_handling("UDP socket creation error");
+
+    memset(&serv_adr, 0, sizeof(serv_adr));
+    serv_adr.sin_family = AF_INET;
+    serv_adr.sin_addr.s_addr = htonl(INADDR_ANY);
+    serv_adr.sin_port = htons(atoi(argv[1]));
+
+    if (bind(serv_sock, (struct sockaddr *)&serv_adr, sizeof(serv_adr)) == -1)
+        error_handling("bind() error");
+
+    printf("Client is connected.\n");
+
+    // 클라이언트의 요청 수신
+    clnt_adr_sz = sizeof(clnt_adr);
+    recvfrom(serv_sock, &ack, sizeof(Ack), 0, (struct sockaddr *)&clnt_adr, &clnt_adr_sz);
+    printf("Received connection request from client.\n");
+
+    // 파일 열기
+    file = fopen("test.jpg", "rb");
+    if (!file)
+        error_handling("File open error");
+
+    while (1)
+    {
+        read_len = fread(packet.data, 1, sizeof(packet.data), file);
+        if (read_len == 0) // 파일 끝에 도달하면 루프 종료
+            break;
+        // 패킷에 시퀀스 번호 설정
+        packet.seq_num = seq_num;
+
+        // 패킷 전송
+        sendto(serv_sock, &packet, sizeof(int) + read_len, 0, (struct sockaddr *)&clnt_adr, clnt_adr_sz);
+        printf("Sent packet with seq_num: %d\n", packet.seq_num);
+
+        // 클라이언트로부터 ACK 수신
+        recvfrom(serv_sock, &ack, sizeof(Ack), 0, (struct sockaddr *)&clnt_adr, &clnt_adr_sz);
+        // ack넘버랑 패킷 시퀀스넘버가 맞으면 일단 잘 가고 있다는 거니까
+        if (ack.ack_num == packet.seq_num)
+        {
+            printf("Received ACK for seq_num: %d\n", ack.ack_num);
+            seq_num++; // 다음 패킷의 시퀀스 번호 증가
+        }
+        // ack수신을 못하거나 ack num이랑 시퀀시 넘버가 다르면
+        else
+        {
+            printf("Received incorrect ACK, expected seq_num: %d\n", seq_num);
+        }
+    }
+
+    fclose(file);     // 파일 닫기
+    close(serv_sock); // 소켓 닫기
+    return 0;
+}
+
+void error_handling(char *message)
+{
+    fputs(message, stderr);
+    fputc('\n', stderr);
+    exit(1);
+}

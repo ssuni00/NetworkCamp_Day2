@@ -4,9 +4,18 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/time.h>
+#include <signal.h>
 #include <fcntl.h>
 
-#define FILENAME "received_test.jpg"
+#define FILENAME "test.jpg"
+
+int timed_out;
+
+void timeout_handler(int signum)
+{
+    timed_out = 1;
+}
 
 void error_handling(char *message)
 {
@@ -17,65 +26,104 @@ void error_handling(char *message)
 
 int main(int argc, char *argv[])
 {
-    int sock, file_fd;
-    struct sockaddr_in serv_adr, from_adr;
-    socklen_t adr_sz;
+    int serv_sock, file_fd;
+    struct sockaddr_in serv_adr, clnt_adr;
+    socklen_t clnt_adr_sz;
     Packet packet;
     Ack ack;
+    struct sigaction sa;
+    struct timeval start, end;
+    double total_time = 0;
+    size_t total_data = 0;
     int seq_num = 0;
 
-    if (argc != 3)
+    if (argc != 2)
     {
-        printf("Usage: %s <IP> <port>\n", argv[0]);
+        printf("Usage: %s <port>\n", argv[0]);
         exit(1);
     }
 
-    sock = socket(PF_INET, SOCK_DGRAM, 0);
-    if (sock == -1)
-        error_handling("socket() error");
-
+    serv_sock = socket(PF_INET, SOCK_DGRAM, 0);
     memset(&serv_adr, 0, sizeof(serv_adr));
     serv_adr.sin_family = AF_INET;
-    serv_adr.sin_addr.s_addr = inet_addr(argv[1]);
-    serv_adr.sin_port = htons(atoi(argv[2]));
+    serv_adr.sin_addr.s_addr = htonl(INADDR_ANY);
+    serv_adr.sin_port = htons(atoi(argv[1]));
 
-    sendto(sock, NULL, 0, 0, (struct sockaddr *)&serv_adr, sizeof(serv_adr));
+    if (bind(serv_sock, (struct sockaddr *)&serv_adr, sizeof(serv_adr)) == -1)
+        error_handling("bind() error");
 
-    file_fd = open(FILENAME, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    // recvfrom에서 client주소 저장
+    clnt_adr_sz = sizeof(clnt_adr);
+    recvfrom(serv_sock, NULL, 0, 0, (struct sockaddr *)&clnt_adr, &clnt_adr_sz);
+    printf("Client is connected.\n");
+
+    file_fd = open(FILENAME, O_RDONLY);
     if (file_fd == -1)
         error_handling("File open error");
 
+    // 시그널 핸들러 설정
+    //  timeout_handler: 타임아웃 시그널 처리
+    sa.sa_handler = timeout_handler;
+    // 시그널 마스크 초기화 (블록하지 않겠다)
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGALRM, &sa, 0);
+
+    gettimeofday(&start, NULL);
+
     while (1)
     {
-        adr_sz = sizeof(from_adr);
-        ssize_t recv_len = recvfrom(sock, &packet, sizeof(Packet), 0, (struct sockaddr *)&from_adr, &adr_sz);
-        // 데이터가 성공적으로 수신한 경우
-        if (recv_len > 0)
-        {
-            // 받은 패킷의 시퀀스넘버 출력
-            printf("packet seq_num: %d\n", packet.seq_num);
+        ssize_t read_len = read(file_fd, packet.data, BUF_SIZE);
+        if (read_len == 0)
+            break;
+        // 현재 패킷의 시퀀스 번호를 설정
+        packet.seq_num = seq_num;
 
-            // seq_num이랑 원하는 seq_num이 같으면
-            if (packet.seq_num == seq_num)
+        // 일단 타임아웃 0으로 돌리고
+        timed_out = 0;
+        while (1)
+        {
+            sendto(serv_sock, &packet, sizeof(Packet), 0, (struct sockaddr *)&clnt_adr, clnt_adr_sz);
+            printf("packet with seq_num: %d\n", packet.seq_num);
+
+            // 알람설정
+            alarm(TIMEOUT);
+            ssize_t recv_len = recvfrom(serv_sock, &ack, sizeof(Ack), 0, (struct sockaddr *)&clnt_adr, &clnt_adr_sz);
+            alarm(0);
+
+            // ack.ack_num == seq_num 이면 수신한
+            // ack 패킷의 ack_num 현재 서버가 보낸 패킷의 seq_num과 일치하는지 확인
+            // => 클라이언트가 올바른 패킷을 수신했음을 확인
+            if (recv_len > 0 && ack.ack_num == seq_num)
             {
-                // 수신한 파일에서 시퀀스넘버값은 빼고
-                write(file_fd, packet.data, recv_len - sizeof(int));
-                ack.ack_num = seq_num;
-                sendto(sock, &ack, sizeof(Ack), 0, (struct sockaddr *)&serv_adr, adr_sz);
-                printf("sent ACK seq_num: %d\n", ack.ack_num);
-                seq_num++;
+                printf("received ACK: %d\n", ack.ack_num);
+                break;
             }
-            // 넘버가 일치하지 않는거니까 하나를 빼서 다시 받아야할 넘버로 돌림
             else
             {
-                ack.ack_num = seq_num - 1;
-                sendto(sock, &ack, sizeof(Ack), 0, (struct sockaddr *)&serv_adr, adr_sz);
-                printf("Resent ACK seq_num: %d\n", ack.ack_num);
+                printf("error: no ack received\n");
+            }
+
+            // timeout이 발생하면
+            if (timed_out)
+            {
+                printf("Timeout: seq_num: %d\n", packet.seq_num);
+                timed_out = 0; // 리셋 타임아웃 flag
             }
         }
+
+        total_data += read_len;
+        seq_num++;
     }
 
+    // through put 계산
+    gettimeofday(&end, NULL);
+    total_time = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
+
+    double throughput = total_data / total_time;
+    printf("Throughput: %0.1f bytes/second\n", throughput);
+
     close(file_fd);
-    close(sock);
+    close(serv_sock);
     return 0;
 }

@@ -1,29 +1,28 @@
 #include "protocol.h"
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
-#include <sys/time.h>
-#include <signal.h>
+#include <fcntl.h>
 
-#define TIMEOUT 2 // 타임아웃을 2초로 설정
+#define FILENAME "received_test.jpg"
 
-void error_handling(char *message);
+void error_handling(char *message)
+{
+    fputs(message, stderr);
+    fputc('\n', stderr);
+    exit(1);
+}
 
 int main(int argc, char *argv[])
 {
-    int sock;
+    int sock, file_fd;
+    struct sockaddr_in serv_adr, from_adr;
+    socklen_t adr_sz;
     Packet packet;
     Ack ack;
-    socklen_t adr_sz;
-    struct sockaddr_in serv_adr, from_adr;
-    FILE *file;
-    size_t total_data = 0;     // 총 수신 데이터 크기
-    struct timeval start, end; // 전송 시간 측정용
     int seq_num = 0;
-    size_t read_len;
 
     if (argc != 3)
     {
@@ -40,72 +39,43 @@ int main(int argc, char *argv[])
     serv_adr.sin_addr.s_addr = inet_addr(argv[1]);
     serv_adr.sin_port = htons(atoi(argv[2]));
 
-    // 서버에 접속 요청 전송
-    sendto(sock, &ack, sizeof(Ack), 0, (struct sockaddr *)&serv_adr, sizeof(serv_adr));
-    printf("Sent request to server.\n");
+    sendto(sock, NULL, 0, 0, (struct sockaddr *)&serv_adr, sizeof(serv_adr));
 
-    file = fopen("received_test.jpg", "wb");
-    if (!file)
+    file_fd = open(FILENAME, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (file_fd == -1)
         error_handling("File open error");
-
-    gettimeofday(&start, NULL);
 
     while (1)
     {
         adr_sz = sizeof(from_adr);
-        alarm(TIMEOUT); // 타이머 시작
-
-        int recv_len = recvfrom(sock, &packet, sizeof(Packet), 0, (struct sockaddr *)&from_adr, &adr_sz);
-        alarm(0); // 타이머 끝
-
-        if (recv_len == -1)
+        ssize_t recv_len = recvfrom(sock, &packet, sizeof(Packet), 0, (struct sockaddr *)&from_adr, &adr_sz);
+        // 데이터가 성공적으로 수신한 경우
+        if (recv_len > 0)
         {
-            // 타임아웃 발생 시 발생한 시퀀스 번호부터 재전송 시도
-            printf("Timeout, resending ACK for seq_num: %d\n", seq_num);
-            ack.ack_num = seq_num; // ack번호를 그 시퀀스 번호로 넣어주고
-            sendto(sock, &ack, sizeof(Ack), 0, (struct sockaddr *)&serv_adr, adr_sz);
-            continue;
+            // 받은 패킷의 시퀀스넘버 출력
+            printf("packet seq_num: %d\n", packet.seq_num);
+
+            // seq_num이랑 원하는 seq_num이 같으면
+            if (packet.seq_num == seq_num)
+            {
+                // 수신한 파일에서 시퀀스넘버값은 빼고
+                write(file_fd, packet.data, recv_len - sizeof(int));
+                ack.ack_num = seq_num;
+                sendto(sock, &ack, sizeof(Ack), 0, (struct sockaddr *)&serv_adr, adr_sz);
+                printf("sent ACK seq_num: %d\n", ack.ack_num);
+                seq_num++;
+            }
+            // 넘버가 일치하지 않는거니까 하나를 빼서 다시 받아야할 넘버로 돌림
+            else
+            {
+                ack.ack_num = seq_num - 1;
+                sendto(sock, &ack, sizeof(Ack), 0, (struct sockaddr *)&serv_adr, adr_sz);
+                printf("Resent ACK seq_num: %d\n", ack.ack_num);
+            }
         }
-
-        // 패킷의 시퀀스 넘버가 현재 시퀀스 넘버면
-        if (packet.seq_num == seq_num)
-        {
-            // 서버에서 보낼때 같이오는 시퀀스 넘버
-            printf("Received packet with seq_num: %d\n", packet.seq_num);
-            // recv_len은 recvfrom 함수가 반환한 수신된 데이터의 총 길이 (패킷해더 포함=int형 시퀀스번호)
-            // 결국 read_len=헤더를 제외한 실제 데이터의 길이
-            read_len = recv_len - sizeof(int);
-            // file stream에 작성
-            fwrite(packet.data, 1, read_len, file);
-            total_data += read_len; // 수신한 데이터 크기 누적
-
-            // 서버에 보낼 시퀀스 넘버
-            ack.ack_num = packet.seq_num;
-            sendto(sock, &ack, sizeof(Ack), 0, (struct sockaddr *)&serv_adr, adr_sz);
-            printf("Sent ACK for seq_num: %d\n", ack.ack_num);
-
-            // 증가해준다는 뜻은 일단 packet, ack둘다 시퀀스가 맞단거니까
-            seq_num++;
-        }
-
-        if (recv_len < sizeof(Packet))
-            break;
     }
 
-    // 전송시간 측정
-    gettimeofday(&end, NULL);
-
-    double elapsed_time = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
-    double throughput = total_data / elapsed_time; // 처리량 계산
-    printf("Throughput: %0.1f bytes/second\n", throughput);
-
-    fclose(file); // 파일 닫기
-    close(sock);  // 소켓 닫기
+    close(file_fd);
+    close(sock);
     return 0;
-}
-void error_handling(char *message)
-{
-    fputs(message, stderr);
-    fputc('\n', stderr);
-    exit(1);
 }

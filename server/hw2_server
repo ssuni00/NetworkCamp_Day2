@@ -8,7 +8,7 @@
 #include <signal.h>
 #include <fcntl.h>
 
-#define FILENAME "test.jpg"
+#define FILENAME "test3.jpg"
 
 int timed_out;
 
@@ -61,8 +61,7 @@ int main(int argc, char *argv[])
     if (file_fd == -1)
         error_handling("File open error");
 
-    // 시그널 핸들러 설정
-    //  timeout_handler: 타임아웃 시그널 처리
+    // timeout_handler: 타임아웃 시그널 처리
     sa.sa_handler = timeout_handler;
     // 시그널 마스크 초기화 (블록하지 않겠다)
     sigemptyset(&sa.sa_mask);
@@ -107,7 +106,7 @@ int main(int argc, char *argv[])
             // timeout이 발생하면
             if (timed_out)
             {
-                printf("Timeout: seq_num: %d\n", packet.seq_num);
+                printf("Timeout at seq_num: %d\n", packet.seq_num);
                 timed_out = 0; // 리셋 타임아웃 flag
             }
         }

@@ -3,7 +3,7 @@
 
 #include <stdlib.h>
 
-#define BUF_SIZE 512
+#define BUF_SIZE 16384
 #define TIMEOUT 3
 
 typedef struct
